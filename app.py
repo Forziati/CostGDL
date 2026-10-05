@@ -45,6 +45,12 @@ if "ANTHROPIC_API_KEY" not in st.secrets:
 
 client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 
+@st.cache_resource
+def ledger():
+    """Gasto acumulado estimado (USD). Sobrevive a recargas, no a reinicios de la app."""
+    return {"spent": 0.0}
+
+
 # api_messages: historial para la API (solo texto; los resultados de búsqueda no se reenvían)
 # shown: solo texto, para mostrar; versions: cada respuesta del agente
 st.session_state.setdefault("api_messages", [])
@@ -109,6 +115,23 @@ def run_agent(live):
 
 
 with st.sidebar:
+    st.header("Crédito")
+    start = st.number_input(
+        "Saldo inicial (USD)",
+        min_value=0.0,
+        value=float(st.secrets.get("CREDIT_START", 4.21)),
+        step=0.5,
+        help="Mira tu saldo en console.anthropic.com → Facturación y anótalo aquí.",
+    )
+    left = max(start - ledger()["spent"], 0.0)
+    st.metric("Saldo estimado", f"USD {left:.2f}", f"-{ledger()['spent']:.2f} gastado", delta_color="off")
+    st.progress(min(left / start, 1.0) if start else 0.0)
+    if left < 0.5:
+        st.warning("Saldo estimado bajo: carga crédito en la consola.")
+    if st.button("Reiniciar contador"):
+        ledger()["spent"] = 0.0
+        st.rerun()
+    st.caption("Estimación según tokens y búsquedas; el saldo oficial está en la consola.")
     st.header("Modelo")
     st.radio("Modelo", list(MODELS), key="model_label", label_visibility="collapsed")
     st.header("Versiones")
@@ -145,6 +168,7 @@ if prompt := st.chat_input("Ej: cocina 4x3 m con isla y baño de 2x2 m, estilo m
             st.session_state.api_messages.pop()
             st.stop()
         live.markdown(answer)
+        ledger()["spent"] += info["usd"]
         st.caption(
             f"{info['searches']} búsqueda(s) · {info['in']:,} tokens entrada · "
             f"{info['out']:,} salida · ≈ USD {info['usd']:.2f}"
