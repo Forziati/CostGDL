@@ -6,6 +6,7 @@ import re
 import anthropic
 import streamlit as st
 
+import visuals
 from kernel import SYSTEM_PROMPT
 
 MODELS = {
@@ -276,6 +277,7 @@ with st.sidebar:
     if st.button("🗑️ Nuevo presupuesto"):
         st.session_state.api_messages = []
         st.session_state.shown = []
+        st.session_state.pop("visuals", None)
         st.rerun()
 
 def file_to_blocks(f):
@@ -318,6 +320,82 @@ def file_to_blocks(f):
     if len(text) > MAX_TEXT_CHARS:
         raise ValueError(f"{name}: es demasiado largo ({len(text):,} caracteres). Divídelo en partes.")
     return [{"type": "text", "text": f"Archivo «{name}»:\n{text}"}]
+
+
+def generate_layout():
+    """Pide a Claude el layout (sin búsqueda web) y lo guarda para dibujarlo."""
+    cfg = MODELS[st.session_state.model_label]
+    resp = client.messages.create(
+        model=cfg["id"],
+        max_tokens=8000,
+        system="Eres un arquitecto que traduce presupuestos de remodelación en distribuciones a escala.",
+        messages=st.session_state.api_messages + [{"role": "user", "content": visuals.LAYOUT_PROMPT}],
+    )
+    text = "".join(b.text for b in resp.content if b.type == "text")
+    spaces, warns = visuals.parse_layout(text)
+    ledger()["spent"] += (resp.usage.input_tokens * cfg["in"] + resp.usage.output_tokens * cfg["out"]) / 1e6
+    st.session_state.visuals = {"spaces": spaces, "warns": warns, "at": len(st.session_state.shown), "renders": {}}
+
+
+def show_svg(svg, name):
+    st.markdown(
+        f'<img src="{visuals.svg_data_uri(svg)}" style="width:100%;max-width:760px;border-radius:12px;'
+        f'border:1px solid #E2C9A5;background:#FFFDF8"/>',
+        unsafe_allow_html=True,
+    )
+    st.download_button("⬇️ SVG", svg, file_name=name, mime="image/svg+xml", key=f"dl_{name}")
+
+
+def render_visuals_panel():
+    vis = st.session_state.get("visuals")
+    with st.expander("🏠 Planta, vistas y renders", expanded=bool(vis)):
+        st.caption("Dibujos a escala a partir de la propuesta actual. Son una idea de la distribución, no planos constructivos.")
+        if st.button("Regenerar" if vis else "Generar planta y vistas", type="primary", key="gen_vis"):
+            with st.spinner("Dibujando distribución…"):
+                try:
+                    generate_layout()
+                except (anthropic.APIError, ValueError) as e:
+                    st.error(f"No se pudo generar: {e}")
+                    return
+            st.rerun()
+        if not vis:
+            return
+        if vis["at"] != len(st.session_state.shown):
+            st.info("La conversación cambió después de generar estos dibujos. Pulsa «Regenerar» para actualizarlos.")
+        for w in vis["warns"]:
+            st.warning(w)
+        gem_key = st.secrets.get("GEMINI_API_KEY")
+        for si, sp in enumerate(vis["spaces"]):
+            st.subheader(sp["nombre"])
+            t_plan, t_alz, t_iso, t_ren = st.tabs(["Planta", "Alzados", "Isométrica", "Renders"])
+            with t_plan:
+                show_svg(visuals.plan_svg(sp), f"planta_{si}.svg")
+            with t_alz:
+                for name, svg in visuals.elevation_svgs(sp):
+                    show_svg(svg, f"alzado_{si}_{name.split()[-1].lower()}.svg")
+            with t_iso:
+                show_svg(visuals.iso_svg(sp), f"isometrica_{si}.svg")
+            with t_ren:
+                if not gem_key:
+                    st.info(
+                        "Para generar fotos realistas desde aquí, agrega `GEMINI_API_KEY` en Secrets "
+                        "(clave de Google AI Studio). Mientras tanto, estos textos sirven en cualquier generador de imágenes."
+                    )
+                for ri, r in enumerate(sp["renders"]):
+                    st.markdown(f"**{r['titulo']}**")
+                    st.code(r["prompt"], language=None)
+                    key = (si, ri)
+                    if gem_key and st.button("Generar imagen", key=f"rend_{si}_{ri}"):
+                        with st.spinner("Generando imagen…"):
+                            try:
+                                vis["renders"][key] = visuals.gemini_render(
+                                    gem_key, st.secrets.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image"), r["prompt"]
+                                )
+                            except Exception as e:  # red, cuota, filtros del proveedor
+                                st.error(str(e))
+                    if key in vis["renders"]:
+                        st.image(vis["renders"][key], caption=r["titulo"])
+                        st.download_button("⬇️ PNG", vis["renders"][key], file_name=f"render_{si}_{ri}.png", key=f"dlr_{si}_{ri}")
 
 
 def handle_message(prompt, blocks=None, files_note=""):
@@ -370,6 +448,10 @@ for i, m in enumerate(st.session_state.shown):
                 st.write(info["rounds"])
                 if info["errors"]:
                     st.warning(f"Errores de búsqueda: {info['errors']}")
+
+if st.session_state.shown and st.session_state.shown[-1]["role"] == "assistant" and not pending \
+        and split_form(st.session_state.shown[-1]["content"])[1] is None:
+    render_visuals_panel()
 
 if pending:
     handle_message(pending)
