@@ -1,0 +1,10 @@
+[theme]
+base = "light"
+primaryColor = "#C2552D"            # terracota
+backgroundColor = "#FBF3E6"         # cal cálida
+secondaryBackgroundColor = "#F1DFC6" # adoquín claro
+textColor = "#3A2A20"
+font = "sans serif"
+
+[server]
+headless = true

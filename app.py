@@ -40,8 +40,66 @@ def web_search_tool(search_type, max_uses=MAX_SEARCHES):
     }
 
 
-st.set_page_config(page_title="CostGDL", page_icon="🏗️", layout="wide")
-st.title("🏗️ CostGDL · Presupuesto de remodelación")
+st.set_page_config(page_title="CostGDL · Presupuesto", page_icon="🌵", layout="wide")
+st.markdown(
+    """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;800&family=Nunito:wght@400;600&display=swap');
+html, body, [class*="css"], .stMarkdown, button, input, textarea { font-family: 'Nunito', sans-serif; }
+:root { --terracota:#C2552D; --teal:#1F7F8C; --cobalto:#1D4E89; --cactus:#4C7A3F; --farol:#F2B544; --cal:#FBF3E6; }
+
+/* Hero: pared terracota con vigas turquesa y luz de farol */
+.hero {
+  position: relative; overflow: hidden; margin: -1rem 0 1.4rem 0; padding: 1.6rem 2rem 1.4rem 2rem;
+  border-radius: 18px; color: #FFF6E8;
+  background:
+    radial-gradient(circle at 88% 20%, rgba(242,181,68,.55) 0, rgba(242,181,68,0) 38%),
+    linear-gradient(135deg, #C2552D 0%, #A8431F 100%);
+  box-shadow: 0 8px 24px rgba(120,50,20,.25);
+}
+.hero::before {  /* vigas */
+  content:""; position:absolute; inset:0 0 auto 0; height:14px;
+  background: repeating-linear-gradient(90deg, #1F7F8C 0 46px, #176672 46px 52px);
+}
+.hero::after {  /* adoquín */
+  content:""; position:absolute; inset:auto 0 0 0; height:8px;
+  background: repeating-linear-gradient(90deg, #8C6A4A 0 22px, #A98562 22px 26px);
+}
+.stMarkdown .hero h1 { font-family:'Playfair Display', serif; font-weight:800; font-size:2.3rem; margin:.6rem 0 .1rem 0; color:#FFF6E8 !important; padding:0; text-shadow:0 2px 6px rgba(80,30,10,.45); }
+.hero p { margin:0 0 .4rem 0; font-size:1.02rem; opacity:.95; }
+.hero .deco { position:absolute; right:1.6rem; top:1.4rem; font-size:2.6rem; filter: drop-shadow(0 0 10px rgba(242,181,68,.9)); }
+
+/* Barra lateral */
+section[data-testid="stSidebar"] { border-right: 6px solid var(--teal); }
+section[data-testid="stSidebar"] h2 { font-family:'Playfair Display', serif; color: var(--terracota); border-bottom: 2px solid var(--farol); padding-bottom:.2rem; }
+[data-testid="stMetricValue"] { color: var(--cobalto); font-weight:800; }
+
+/* Chat */
+[data-testid="stChatMessage"] { border-radius: 14px; padding: .9rem 1.1rem; margin-bottom:.7rem; background:#FFFDF8; border:1px solid #E9D5B8; border-left:6px solid var(--terracota); box-shadow:0 2px 8px rgba(120,80,40,.08); }
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) { border-left-color: var(--teal); background:#F4FAFA; }
+.stMarkdown h1, .stMarkdown h2, .stMarkdown h3 { font-family:'Playfair Display', serif; color:#A8431F; }
+.stMarkdown table { border-collapse: collapse; width:100%; font-size:.93rem; }
+.stMarkdown th { background: var(--teal); color:#fff; padding:.45rem .6rem; text-align:left; }
+.stMarkdown td { padding:.4rem .6rem; border-bottom:1px solid #E9D5B8; }
+.stMarkdown tr:nth-child(even) td { background:#FBF1E0; }
+
+/* Botones, formularios, uploader */
+.stButton > button, .stFormSubmitButton > button { border-radius: 999px; border:1.5px solid var(--terracota); font-weight:600; }
+.stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"] { background: var(--terracota); color:#fff; border-color:var(--terracota); }
+.stButton > button[kind="primary"]:hover, .stFormSubmitButton > button[kind="primary"]:hover { background:#A8431F; border-color:#A8431F; }
+[data-testid="stForm"] { border:2px dashed var(--teal); border-radius:14px; background:#FFFBF2; }
+[data-testid="stExpander"] { border:1.5px solid #E2C9A5; border-radius:14px; background:#FFFBF2; }
+[data-testid="stChatInput"] { border:2px solid var(--teal); border-radius: 16px; }
+</style>
+
+<div class="hero">
+  <div class="deco">🏮</div>
+  <h1>CostGDL</h1>
+  <p>Presupuesto de remodelación · Guadalajara 🌵 Tu casa, cotizada con precios vigentes.</p>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
 # --- acceso opcional por contraseña -------------------------------------
 pwd = st.secrets.get("APP_PASSWORD")
@@ -269,9 +327,9 @@ def handle_message(prompt, blocks=None, files_note=""):
         if blocks
         else {"role": "user", "content": prompt}
     )
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="🧑‍🔧"):
         st.markdown(prompt + files_note)
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="🌵"):
         live = st.empty()
         live.markdown("Pensando… 🔎")
         try:
@@ -294,7 +352,7 @@ def handle_message(prompt, blocks=None, files_note=""):
 last = len(st.session_state.shown) - 1
 pending = None
 for i, m in enumerate(st.session_state.shown):
-    with st.chat_message(m["role"]):
+    with st.chat_message(m["role"], avatar="🧑‍🔧" if m["role"] == "user" else "🌵"):
         if m["role"] == "user":
             st.markdown(m["content"])
             continue
