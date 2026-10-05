@@ -37,19 +37,43 @@ st.session_state.setdefault("api_messages", [])
 st.session_state.setdefault("shown", [])
 
 
-def run_agent():
-    """Ejecuta el turno del agente, continuando si la búsqueda web pausa el turno."""
-    while True:
-        resp = client.messages.create(
+def run_agent(live):
+    """Ejecuta el turno del agente con streaming.
+
+    Sigue mientras la búsqueda web pause el turno. Devuelve el texto posterior al último
+    bloque de búsqueda (la respuesta final, sin la narración intermedia) y un aviso si
+    el turno se cortó.
+    """
+    streamed, final_text, searches, notice = "", [], 0, ""
+    for _ in range(6):
+        with client.messages.stream(
             model=MODEL,
-            max_tokens=8000,
+            max_tokens=16000,
             system=SYSTEM_PROMPT,
             tools=[WEB_SEARCH],
             messages=st.session_state.api_messages,
-        )
+        ) as stream:
+            for chunk in stream.text_stream:
+                streamed += chunk
+                live.markdown(streamed + "▌")
+            resp = stream.get_final_message()
         st.session_state.api_messages.append({"role": "assistant", "content": resp.content})
-        if resp.stop_reason != "pause_turn":
-            return "".join(b.text for b in resp.content if b.type == "text")
+        for b in resp.content:
+            if b.type == "text":
+                final_text.append(b.text)
+            else:
+                final_text = []
+                searches += b.type == "server_tool_use"
+        if resp.stop_reason == "pause_turn":
+            streamed += "\n\n"
+            continue
+        if resp.stop_reason == "max_tokens":
+            notice = "\n\n⚠️ La respuesta se cortó por longitud. Escribe «continúa» para completarla."
+        break
+    else:
+        notice = "\n\n⚠️ Demasiadas rondas de búsqueda. Escribe «continúa» para terminar la propuesta."
+    text = "".join(final_text).strip() or streamed.strip()
+    return text + notice, searches
 
 
 with st.sidebar:
@@ -77,14 +101,17 @@ if prompt := st.chat_input("Ej: cocina 4x3 m con isla y baño de 2x2 m, estilo m
     with st.chat_message("user"):
         st.markdown(prompt)
     with st.chat_message("assistant"):
-        with st.spinner("Buscando precios vigentes…"):
-            try:
-                answer = run_agent()
-            except anthropic.APIError as e:
-                st.error(f"Error de la API: {e}")
-                st.session_state.api_messages.pop()
-                st.session_state.shown.pop()
-                st.stop()
-        st.markdown(answer)
+        live = st.empty()
+        live.markdown("Pensando… 🔎")
+        try:
+            answer, searches = run_agent(live)
+        except anthropic.APIError as e:
+            st.error(f"Error de la API: {e}")
+            st.session_state.api_messages.pop()
+            st.session_state.shown.pop()
+            st.stop()
+        live.markdown(answer)
+        if searches:
+            st.caption(f"{searches} búsqueda(s) web")
     st.session_state.shown.append({"role": "assistant", "content": answer})
     st.rerun()
