@@ -1,3 +1,6 @@
+import json
+import re
+
 import anthropic
 import streamlit as st
 
@@ -114,6 +117,63 @@ def run_agent(live):
     return text + notice, info
 
 
+FORM_RE = re.compile(r"```cuestionario\s*(\{.*?\})\s*```", re.S)
+OTRA = "Otra (especificar abajo)"
+
+
+def split_form(text):
+    """Separa el texto visible del cuestionario JSON (None si no hay o es inválido)."""
+    m = FORM_RE.search(text)
+    if not m:
+        return text, None
+    try:
+        form = json.loads(m.group(1))["preguntas"]
+    except (ValueError, KeyError, TypeError):
+        return text, None
+    return (text[: m.start()] + text[m.end():]).strip(), form
+
+
+def render_form(msg_idx, questions):
+    """Dibuja el cuestionario; devuelve el texto de respuestas al enviarse, o None."""
+    with st.form(f"form_{msg_idx}"):
+        picked = {}
+        for q in questions:
+            opts = list(q["opciones"]) + [OTRA]
+            default = q.get("defecto")
+            st.markdown(f"**{q['texto']}**")
+            if q.get("tipo") == "varias":
+                sel = st.multiselect(
+                    q["texto"], opts, default=[d for d in (default or []) if d in opts],
+                    key=f"{msg_idx}_{q['id']}", label_visibility="collapsed",
+                )
+            else:
+                idx = opts.index(default) if default in opts else 0
+                sel = st.radio(
+                    q["texto"], opts, index=idx, key=f"{msg_idx}_{q['id']}",
+                    label_visibility="collapsed",
+                )
+            other = st.text_input(
+                "Otra:", key=f"{msg_idx}_{q['id']}_otra", placeholder="Si elegiste «Otra», escribe aquí",
+                label_visibility="collapsed",
+            )
+            picked[q["id"]] = (q["texto"], sel, other)
+        c1, c2 = st.columns(2)
+        send = c1.form_submit_button("Enviar respuestas", type="primary")
+        assume = c2.form_submit_button("Asumir todo (valores por defecto)")
+    if assume:
+        return "Asume todos los valores por defecto del cuestionario y arma la propuesta base."
+    if not send:
+        return None
+    lines = ["Respuestas al cuestionario:"]
+    for _id, (texto, sel, other) in picked.items():
+        sel = sel if isinstance(sel, list) else [sel]
+        vals = [v for v in sel if v != OTRA]
+        if OTRA in sel and other.strip():
+            vals.append(other.strip())
+        lines.append(f"- {texto} {', '.join(vals) if vals else '(sin preferencia, asume)'}")
+    return "\n".join(lines)
+
+
 with st.sidebar:
     st.header("Crédito")
     start = st.number_input(
@@ -135,7 +195,11 @@ with st.sidebar:
     st.header("Modelo")
     st.radio("Modelo", list(MODELS), key="model_label", label_visibility="collapsed")
     st.header("Versiones")
-    versions = [m["content"] for m in st.session_state.shown if m["role"] == "assistant"]
+    versions = [
+        split_form(m["content"])[0]
+        for m in st.session_state.shown
+        if m["role"] == "assistant" and split_form(m["content"])[1] is None
+    ]
     if versions:
         st.download_button(
             "⬇️ Descargar última versión (.md)",
@@ -148,11 +212,7 @@ with st.sidebar:
         st.session_state.shown = []
         st.rerun()
 
-for m in st.session_state.shown:
-    with st.chat_message(m["role"]):
-        st.markdown(m["content"])
-
-if prompt := st.chat_input("Ej: cocina 4x3 m con isla y baño de 2x2 m, estilo moderno…"):
+def handle_message(prompt):
     st.session_state.shown.append({"role": "user", "content": prompt})
     st.session_state.api_messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -167,15 +227,35 @@ if prompt := st.chat_input("Ej: cocina 4x3 m con isla y baño de 2x2 m, estilo m
             st.session_state.shown.pop()
             st.session_state.api_messages.pop()
             st.stop()
-        live.markdown(answer)
+        live.markdown(split_form(answer)[0])
         ledger()["spent"] += info["usd"]
-        st.caption(
-            f"{info['searches']} búsqueda(s) · {info['in']:,} tokens entrada · "
-            f"{info['out']:,} salida · ≈ USD {info['usd']:.2f}"
-        )
-        with st.expander("Diagnóstico"):
-            st.write(info["rounds"])
-            if info["errors"]:
-                st.warning(f"Errores de búsqueda: {info['errors']}")
-    st.session_state.shown.append({"role": "assistant", "content": answer})
+    st.session_state.shown.append({"role": "assistant", "content": answer, "info": info})
     st.rerun()
+
+
+last = len(st.session_state.shown) - 1
+pending = None
+for i, m in enumerate(st.session_state.shown):
+    with st.chat_message(m["role"]):
+        if m["role"] == "user":
+            st.markdown(m["content"])
+            continue
+        text, form = split_form(m["content"])
+        st.markdown(text)
+        if form and i == last:
+            pending = render_form(i, form)
+        info = m.get("info")
+        if info:
+            st.caption(
+                f"{info['searches']} búsqueda(s) · {info['in']:,} tokens entrada · "
+                f"{info['out']:,} salida · ≈ USD {info['usd']:.2f}"
+            )
+            with st.expander("Diagnóstico"):
+                st.write(info["rounds"])
+                if info["errors"]:
+                    st.warning(f"Errores de búsqueda: {info['errors']}")
+
+if pending:
+    handle_message(pending)
+if prompt := st.chat_input("Ej: cocina 4x3 m con isla y baño de 2x2 m, estilo moderno…"):
+    handle_message(prompt)
