@@ -1,2 +1,4 @@
 streamlit>=1.40
 anthropic>=0.60
+openpyxl>=3.1
+python-docx>=1.1

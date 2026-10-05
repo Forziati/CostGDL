@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import re
 
@@ -17,13 +19,17 @@ MODELS = {
 SEARCH_USD = 0.01  # aprox. por búsqueda web (USD 10 por 1000)
 MAX_SEARCHES = 6
 MAX_ROUNDS = 4
+FILE_MAX_SEARCHES = 12  # cuando se cotiza un listado subido
+FILE_MAX_ROUNDS = 6
+MAX_FILE_MB = 10
+MAX_TEXT_CHARS = 60_000
 
 
-def web_search_tool(search_type):
+def web_search_tool(search_type, max_uses=MAX_SEARCHES):
     return {
         "type": search_type,
         "name": "web_search",
-        "max_uses": MAX_SEARCHES,
+        "max_uses": max_uses,
         "user_location": {
             "type": "approximate",
             "city": "Guadalajara",
@@ -61,7 +67,7 @@ st.session_state.setdefault("shown", [])
 st.session_state.setdefault("model_label", "Haiku 4.5 (económico, para probar)")
 
 
-def run_agent(live):
+def run_agent(live, with_file=False):
     """Ejecuta un turno del agente (con streaming y búsqueda web).
 
     Dentro del turno se reenvían los bloques de búsqueda para poder reanudar un
@@ -73,12 +79,14 @@ def run_agent(live):
     turn = list(st.session_state.api_messages)
     streamed, final_text, notice = "", [], ""
     info = {"searches": 0, "in": 0, "out": 0, "rounds": [], "errors": []}
-    for _ in range(MAX_ROUNDS):
+    rounds = FILE_MAX_ROUNDS if with_file else MAX_ROUNDS
+    searches = FILE_MAX_SEARCHES if with_file else MAX_SEARCHES
+    for _ in range(rounds):
         with client.messages.stream(
             model=cfg["id"],
             max_tokens=16000,
             system=SYSTEM_PROMPT,
-            tools=[web_search_tool(cfg["search"])],
+            tools=[web_search_tool(cfg["search"], searches)],
             messages=turn,
         ) as stream:
             for chunk in stream.text_stream:
@@ -212,16 +220,62 @@ with st.sidebar:
         st.session_state.shown = []
         st.rerun()
 
-def handle_message(prompt):
-    st.session_state.shown.append({"role": "user", "content": prompt})
-    st.session_state.api_messages.append({"role": "user", "content": prompt})
+def file_to_blocks(f):
+    """Convierte un archivo subido en bloques de contenido para la API."""
+    name, data = f.name, f.getvalue()
+    ext = name.rsplit(".", 1)[-1].lower()
+    if len(data) > MAX_FILE_MB * 1024 * 1024:
+        raise ValueError(f"{name}: pesa más de {MAX_FILE_MB} MB.")
+    b64 = lambda: base64.standard_b64encode(data).decode()
+    if ext == "pdf":
+        return [{"type": "document", "title": name,
+                 "source": {"type": "base64", "media_type": "application/pdf", "data": b64()}}]
+    if ext in ("png", "jpg", "jpeg", "webp", "gif"):
+        mt = {"jpg": "image/jpeg"}.get(ext, f"image/{ext}")
+        return [{"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64()}}]
+    if ext in ("txt", "md", "csv"):
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("latin-1")
+    elif ext == "xlsx":
+        from openpyxl import load_workbook
+
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        parts = []
+        for ws in wb.worksheets:
+            rows = [" | ".join("" if c is None else str(c) for c in r) for r in ws.iter_rows(values_only=True)]
+            parts.append(f"## Hoja: {ws.title}\n" + "\n".join(r for r in rows if r.strip(" |")))
+        text = "\n\n".join(parts)
+    elif ext == "docx":
+        from docx import Document
+
+        doc = Document(io.BytesIO(data))
+        lines = [p.text for p in doc.paragraphs if p.text.strip()]
+        for t in doc.tables:
+            lines += [" | ".join(c.text.strip() for c in r.cells) for r in t.rows]
+        text = "\n".join(lines)
+    else:
+        raise ValueError(f"{name}: formato no soportado.")
+    if len(text) > MAX_TEXT_CHARS:
+        raise ValueError(f"{name}: es demasiado largo ({len(text):,} caracteres). Divídelo en partes.")
+    return [{"type": "text", "text": f"Archivo «{name}»:\n{text}"}]
+
+
+def handle_message(prompt, blocks=None, files_note=""):
+    st.session_state.shown.append({"role": "user", "content": prompt + files_note})
+    st.session_state.api_messages.append(
+        {"role": "user", "content": (blocks or []) + [{"type": "text", "text": prompt}]}
+        if blocks
+        else {"role": "user", "content": prompt}
+    )
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(prompt + files_note)
     with st.chat_message("assistant"):
         live = st.empty()
         live.markdown("Pensando… 🔎")
         try:
-            answer, info = run_agent(live)
+            answer, info = run_agent(live, with_file=bool(blocks))
         except anthropic.APIError as e:
             st.error(f"Error de la API: {e}")
             st.session_state.shown.pop()
@@ -229,6 +283,10 @@ def handle_message(prompt):
             st.stop()
         live.markdown(split_form(answer)[0])
         ledger()["spent"] += info["usd"]
+    if blocks:  # el listado ya quedó reflejado en la propuesta; no se reenvía en cada turno
+        st.session_state.api_messages[-2] = {
+            "role": "user", "content": prompt + files_note + " (archivo ya procesado)",
+        }
     st.session_state.shown.append({"role": "assistant", "content": answer, "info": info})
     st.rerun()
 
@@ -257,5 +315,27 @@ for i, m in enumerate(st.session_state.shown):
 
 if pending:
     handle_message(pending)
+
+st.session_state.setdefault("up_n", 0)
+with st.expander("📎 Subir listado de materiales (Excel, CSV, PDF, Word, TXT o foto)"):
+    files = st.file_uploader(
+        "Archivos", type=["xlsx", "csv", "pdf", "docx", "txt", "md", "png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True, key=f"up_{st.session_state.up_n}", label_visibility="collapsed",
+    )
+    note = st.text_input("Instrucciones (opcional)", placeholder="Ej: es la cocina; usa porcelanato de 60x60 como alternativa")
+    if st.button("Cotizar archivo(s)", type="primary", disabled=not files):
+        try:
+            blocks = [b for f in files for b in file_to_blocks(f)]
+        except Exception as e:  # archivo ilegible o demasiado grande
+            st.error(str(e))
+            st.stop()
+        st.session_state.up_n += 1  # limpia el cargador
+        handle_message(
+            "Cotiza este listado de materiales: busca precios vigentes por renglón, "
+            "respeta cantidades y unidades, y arma la propuesta con subtotales y total. "
+            + note,
+            blocks=blocks,
+            files_note="\n\n📎 " + ", ".join(f.name for f in files),
+        )
 if prompt := st.chat_input("Ej: cocina 4x3 m con isla y baño de 2x2 m, estilo moderno…"):
     handle_message(prompt)
