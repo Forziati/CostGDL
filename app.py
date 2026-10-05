@@ -3,7 +3,10 @@ import streamlit as st
 
 from kernel import SYSTEM_PROMPT
 
-MODEL = "claude-sonnet-5-5"
+MODELS = {
+    "Sonnet 5.5 (mejor calidad)": "claude-sonnet-5-5",
+    "Haiku 4.5 (económico, para probar)": "claude-haiku-4-5-20251001",
+}
 WEB_SEARCH = {
     "type": "web_search_20250305",
     "name": "web_search",
@@ -35,6 +38,7 @@ client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 # shown: solo texto, para mostrar; versions: cada respuesta del agente
 st.session_state.setdefault("api_messages", [])
 st.session_state.setdefault("shown", [])
+st.session_state.setdefault("model_label", "Haiku 4.5 (económico, para probar)")
 
 
 def run_agent(live):
@@ -47,7 +51,7 @@ def run_agent(live):
     streamed, final_text, searches, notice = "", [], 0, ""
     for _ in range(6):
         with client.messages.stream(
-            model=MODEL,
+            model=MODELS[st.session_state.model_label],
             max_tokens=16000,
             system=SYSTEM_PROMPT,
             tools=[WEB_SEARCH],
@@ -77,6 +81,8 @@ def run_agent(live):
 
 
 with st.sidebar:
+    st.header("Modelo")
+    st.radio("Modelo", list(MODELS), key="model_label", label_visibility="collapsed")
     st.header("Versiones")
     versions = [m["content"] for m in st.session_state.shown if m["role"] == "assistant"]
     if versions:
